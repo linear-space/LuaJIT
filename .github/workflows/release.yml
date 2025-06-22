@@ -1,0 +1,212 @@
+name: Build and Release LuaJIT
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for manual release'
+        required: false
+        default: 'manual-release'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Get commit hash
+        id: commit
+        run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+          
+      - name: Build LuaJIT for Linux x86_64
+        run: |
+          # Build 64-bit version.
+          make clean
+          make -j$(nproc)
+          
+      - name: Prepare artifacts
+        run: |
+          # Create the proper directory structure.
+          mkdir -p artifacts/linux-x64
+          mkdir -p artifacts/linux-x64/lua/jit
+          
+          # Copy the main executable and libraries.
+          cp src/libluajit*.so* artifacts/linux-x64/ || true
+          cp src/libluajit*.a artifacts/linux-x64/ || true
+          cp src/luajit artifacts/linux-x64/
+          
+          # Copy the header files.
+          cp src/lua.h src/luaconf.h src/lualib.h src/lauxlib.h src/luajit.h artifacts/linux-x64/
+          
+          # Copy all Lua files from src/jit to lua/jit.
+          cp src/jit/*.lua artifacts/linux-x64/lua/jit/
+          
+      - name: Create archive
+        run: |
+          cd artifacts
+          zip -r luajit-linux-x64-${{ steps.commit.outputs.hash }}.zip linux-x64
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: luajit-linux-x64-${{ steps.commit.outputs.hash }}
+          path: artifacts/luajit-linux-x64-${{ steps.commit.outputs.hash }}.zip
+
+  build-macos-aarch64:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Get commit hash
+        id: commit
+        run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        
+      - name: Build LuaJIT for macOS ARM64
+        run: |
+          # Ensure we're building for ARM64 with macOS 11.0 minimum.
+          make clean
+          make -j$(sysctl -n hw.ncpu) TARGET_SYS=Darwin MACOSX_DEPLOYMENT_TARGET=11.0
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          
+      - name: Verify architecture
+        run: |
+          file src/libluajit*.so || true
+          file src/libluajit*.a || true
+          file src/luajit
+          
+      - name: Prepare artifacts
+        run: |
+          # Create the proper directory structure.
+          mkdir -p artifacts/macos-aarch64
+          mkdir -p artifacts/macos-aarch64/lua/jit
+          
+          # Copy the main executable and libraries (note: .so files on macOS, not .dylib).
+          cp src/libluajit*.so artifacts/macos-aarch64/ || true
+          cp src/libluajit*.a artifacts/macos-aarch64/ || true
+          cp src/luajit artifacts/macos-aarch64/
+          
+          # Copy headers.
+          cp src/lua.h src/luaconf.h src/lualib.h src/lauxlib.h src/luajit.h artifacts/macos-aarch64/
+          
+          # Copy all Lua files from src/jit to lua/jit.
+          cp src/jit/*.lua artifacts/macos-aarch64/lua/jit/
+          
+      - name: Create archive
+        run: |
+          cd artifacts
+          zip -r luajit-macos-aarch64-${{ steps.commit.outputs.hash }}.zip macos-aarch64
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: luajit-macos-aarch64-${{ steps.commit.outputs.hash }}
+          path: artifacts/luajit-macos-aarch64-${{ steps.commit.outputs.hash }}.zip
+
+  build-windows-x64:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Get commit hash
+        id: commit
+        shell: bash
+        run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+        
+      - name: Build LuaJIT for Windows x86_64
+        shell: cmd
+        run: |
+          cd src
+          call msvcbuild.bat amalg
+          
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          # Create the proper directory structure.
+          mkdir -p artifacts/windows-x64
+          mkdir -p artifacts/windows-x64/lua/jit
+          
+          # Copy the main executable and libraries.
+          cp src/lua51.dll artifacts/windows-x64/ || true
+          cp src/lua51.lib artifacts/windows-x64/ || true
+          cp src/luajit.exe artifacts/windows-x64/
+          
+          # Copy headers.
+          cp src/lua.h src/luaconf.h src/lualib.h src/lauxlib.h src/luajit.h artifacts/windows-x64/
+          
+          # Copy all Lua files from src/jit to lua/jit.
+          cp src/jit/*.lua artifacts/windows-x64/lua/jit/
+          
+      - name: Create archive
+        shell: powershell
+        run: |
+          cd artifacts
+          Compress-Archive -Path windows-x64\* -DestinationPath luajit-windows-x64-${{ steps.commit.outputs.hash }}.zip
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: luajit-windows-x64-${{ steps.commit.outputs.hash }}
+          path: artifacts/luajit-windows-x64-${{ steps.commit.outputs.hash }}.zip
+
+  create-release:
+    needs: [build-linux-x64, build-macos-aarch64, build-windows-x64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Get commit hash
+        id: commit
+        run: echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          
+      - name: List artifacts
+        run: |
+          ls -la artifacts/
+          find artifacts -name "*.zip" -type f
+          
+      - name: Gather archives
+        run: |
+          mkdir -p release-files
+          find artifacts -name "*.zip" -type f -exec cp {} release-files/ \;
+          ls -la release-files/
+          
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v1
+        if: github.event_name == 'release'
+        with:
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Upload release assets (manual trigger)
+        uses: softprops/action-gh-release@v1
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ github.event.inputs.tag_name }}
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
