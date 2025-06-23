@@ -76,16 +76,20 @@ jobs:
       - name: Build LuaJIT for macOS ARM64
         run: |
           # Ensure we're building for ARM64 with macOS 11.0 minimum.
+          # Use @loader_path to make the library relocatable
           make clean
-          make -j$(sysctl -n hw.ncpu) TARGET_SYS=Darwin MACOSX_DEPLOYMENT_TARGET=11.0
+          make -j$(sysctl -n hw.ncpu) TARGET_SYS=Darwin MACOSX_DEPLOYMENT_TARGET=11.0 PREFIX='@loader_path/..'
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
           
-      - name: Verify architecture
+      - name: Verify architecture and install name
         run: |
           file src/libluajit*.so || true
           file src/libluajit*.a || true
           file src/luajit
+          # Verify the install name is correctly set
+          otool -L src/libluajit.so
+          otool -L src/luajit
           
       - name: Prepare artifacts
         run: |
@@ -94,6 +98,7 @@ jobs:
           mkdir -p artifacts/macos-aarch64/lua/jit
           
           # Copy the main executable and libraries (note: .so files on macOS, not .dylib).
+          # The library has a relocatable install name (@loader_path) so no DYLD_LIBRARY_PATH is needed.
           cp src/libluajit*.so artifacts/macos-aarch64/ || true
           cp src/libluajit*.a artifacts/macos-aarch64/ || true
           cp src/luajit artifacts/macos-aarch64/
